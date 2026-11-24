@@ -1,0 +1,115 @@
+# OCT graft function prediction
+
+Code accompanying the study of optical coherence tomography (OCT) measurements for predicting delayed graft function (DGF) in deceased-donor kidneys. Start with the three analysis-ready feature tables to run prediction, or use individual OCT B-scans to demonstrate lumen segmentation.
+
+## Repository layout
+
+| Directory | Contents |
+| --- | --- |
+| `segmentation/` | Attention residual U-Net for lumen inference, interactive mask review, and lightweight U-Net training and inference for the capsule |
+| `features/` | Morphology measurements from accepted masks, clinical and biopsy processing, and spatial and clinical feature-table assembly |
+| `prediction/` | Fold-wise preprocessing, correlation pruning and feature selection, six classifier grids, logistic regression with PCA, and the 12-kidney spatial analysis |
+| `figures/` | Plotting code for the prediction, morphology and exploratory spatial results |
+| [`data/`](data/README.md) | Locations for the three prediction tables and downloaded model weights |
+| [`examples/lumen_segmentation/`](examples/lumen_segmentation/README.md) | Example B-scan layout and mask review instructions |
+
+Visual tracking, B-scan pose estimation, capsule-referenced alignment, and extraction of spatial measurements from the aligned scans are handled by the companion tracking workflow. This repository consumes its spatial measurements as a kidney-level CSV.
+
+## Environment
+
+Create and activate the Conda environment from the repository root.
+
+```sh
+conda env create -f environment.yml
+conda activate oct-graft-prediction
+```
+
+The environment covers the feature, prediction, plotting, and segmentation scripts. Lumen inference requires the pretrained Attention residual U-Net weights. Capsule training requires annotated images. Interactive review requires a desktop OpenCV session.
+
+TabPFN uses the [Prior Labs TabPFN-3 classifier checkpoint](https://huggingface.co/Prior-Labs/tabpfn_3/blob/f82af27a56b1def9fc66403dc2e846bb4e57ff02/tabpfn-v3-classifier-v3_default.ckpt) as the reference for this study. Confirm the checkpoint selected at runtime when reproducing archived results. The script uses the TabPFN package's authentication, download, and caching workflow and reads `TABPFN_TOKEN` from the environment or a local `.env.local` file. The checkpoint is available under the [Prior Labs TabPFN-3 license](https://huggingface.co/Prior-Labs/tabpfn_3/blob/main/LICENSE).
+
+## 1. Segment OCT B-scans
+
+Download the study segmentation models from the [Google Drive weights folder](https://drive.google.com/drive/folders/1U0m6ixyq7SQYFeMDzUmZKMyHjIv-kqf3). Save both files under `data/weights/` using their original filenames. For the larger lumen file, Google Drive may ask you to confirm the download.
+
+| Model | Weight file | Load with |
+| --- | --- | --- |
+| Capsule Small U-Net | [`best_model.keras`](https://drive.google.com/file/d/1wIft0sMBUpv5mYNPa5a0O_PNB5G1i0u2/view) | `--model` |
+| Lumen Attention ResUNet | [`resattunet_process_new (copy).hdf5`](https://drive.google.com/file/d/1ZQdvx1J4iV0AAXRECO5TaQS5O1Ay1Z1y/view) | `--weights` |
+
+Compare the downloaded files against these SHA-256 checksums.
+
+```text
+5108c5ca238a23e0e32281918fcc2ec49d70faaef135106b432726336b671ba2  best_model.keras
+1f6a0ced8f7351e26236e1df665a846a86c99ffcea9dd82e74498e553dc06979  resattunet_process_new (copy).hdf5
+```
+
+Run the lumen model on the three OCT B-scans in the [example folders](examples/lumen_segmentation/README.md). The review window shows the predicted lumen regions. Press **S** or **Enter** to save the B-scan and its binary lumen mask under `results/lumen_demo/`.
+
+```sh
+python segmentation/review_inference.py --input-dir examples/lumen_segmentation --weights "data/weights/resattunet_process_new (copy).hdf5" --output-dir results/lumen_demo
+```
+
+The `review_inference_top_lumen.py` entry point adds ranking by predicted lumen area before manual review. It takes the same input, weight and output flags.
+
+For a separate capsule segmentation demo, run the capsule model on the B-scans saved during lumen review.
+
+```sh
+python segmentation/infer_capsule_region_segmentation.py --model data/weights/best_model.keras --input-dir results/lumen_demo/images --output-dir results/capsule_demo
+```
+
+## 2. Place the analysis-ready feature tables
+
+Put the [three merged CSVs](data/README.md#prediction-inputs) in `data/processed/`. They contain the clinical and OCT features used for prediction and include the biopsy and spatial features where applicable. The scripts in [`features/`](features/) document how the upstream measurements were derived. The example B-scans illustrate how segmentation produces the lumen masks used for morphology measurements.
+
+## 3. Run kidney-level prediction
+
+Use `--cohort all` for 52 kidneys or `--cohort biopsy` for 33 kidneys. Run each grid in its own output directory, using the folder name below `results/models/52` or `results/models/33`.
+
+| Classifier | Script in `prediction/` | Output folder name |
+| --- | --- | --- |
+| Logistic regression | `prediction_kidney_corr_auc_quota_grid_logistic.py` | `logistic_corr_auc_quota_grid` |
+| Random forest | `prediction_kidney_corr_auc_quota_grid_RF.py` | `random_forest_corr_auc_quota_grid` |
+| Extra Trees | `prediction_kidney_corr_auc_quota_grid_extra_trees.py` | `extra_trees_corr_auc_quota_grid` |
+| XGBoost | `prediction_kidney_corr_auc_quota_grid_xgboost.py` | `xgboost_corr_auc_quota_grid` |
+| CatBoost | `prediction_kidney_corr_auc_quota_grid_catboost.py` | `catboost_corr_auc_quota_grid` |
+| TabPFN | `prediction_kidney_corr_auc_quota_grid_tabpfn_more.py` | `tabpfn_corr_auc_quota_grid_more` |
+
+For example, run the 52-kidney logistic regression grid or the 33-kidney logistic regression grid with 85%, 90% and 95% PCA variance targets.
+
+```sh
+python prediction/prediction_kidney_corr_auc_quota_grid_logistic.py --cohort all --out-dir results/models/52/logistic_corr_auc_quota_grid
+python prediction/prediction_kidney_corr_auc_dim_reduction_quota_grid_hyper_logistic.py --cohort biopsy --out-dir results/models/33/logistic_corr_auc_pca_quota_grid
+```
+
+Use `--max-param-combinations 1 --max-combinations 1` with a separate output directory for a quick check. The full grids generate nested folders. On Windows, use a short checkout path or pass a short absolute path to `--out-dir` if long paths are disabled.
+
+### Spatial analysis
+
+The spatial-analysis grid includes the morphology quota of 1 used for the representative logistic regression configuration in Fig. 5. Its applicable donor, morphology and spatial quotas are 4, 1 and 1, respectively, at `C = 0.01`.
+
+```sh
+python prediction/prediction_kidney_oct_spatial_quota_logreg_152to172.py --input-csv data/processed/kidney_spatial_candidates.csv --output-dir results/spatial_12 --exclude-recipient-rrt
+python figures/analyze_oct_spatial_donor_quota_grid.py --results-dir results/spatial_12
+python figures/make_OCT_spatial_res.py --results-dir results/spatial_12 --features data/processed/kidney_spatial_candidates.csv
+```
+
+## 4. Summarize results
+
+```sh
+python prediction/summarize_matched_comparisons.py --results-52 results/models/52 --results-33 results/models/33
+```
+
+This writes the paired ROC-AUC comparisons in Supplementary Section 2.2. Starting from the same classifier parameters and shared feature counts, it measures the change after adding OCT morphology in 52 kidneys or biopsy features in 33 kidneys.
+
+| Output | Entry point |
+| --- | --- |
+| Fig. 2 and Fig. 4 prediction panels | `figures/make_prediction_results_figure.py` and `figures/make_prediction_results_biopsy_figure.py`, using the grid summaries and saved ROC curve points |
+| Fig. 3 morphology selection and distributions | `figures/make_oct_morphology_feature_figure.py --cohort 52`, using a populated grid summary and the cohort feature CSV |
+| Fig. 5 exploratory spatial panels | `figures/make_OCT_spatial_res.py`, using the 12-kidney predictions and fold-selection outputs |
+| Full run summaries, metrics and feature selections | `quota_grid_summary.csv`, `metrics.csv` and `fold_selections.csv` from the grid scripts |
+| Supplementary hyperparameter search settings and 52-kidney grid audit | `prediction/analyze_prediction_results.py` |
+
+The classifier outputs use DGF as label 1 and IGF as label 0. The Fig. 5 ROC rendering uses IGF as the displayed positive class, as specified in the figure caption.
+
+
